@@ -1,0 +1,29 @@
+{
+  "name": "warix-state",
+  "version": "1.0.0",
+  "description": "Warix immutable state",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/warix-code/warix-state.git"
+  },
+  "keywords": [
+    "Warix",
+    "State"
+  ],
+  "author": "Rogelio Figueroa",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/warix-code/warix-state/issues"
+  },
+  "homepage": "https://github.com/warix-code/warix-state#readme",
+  "dependencies": {
+    "@types/lodash": "^4.14.149",
+    "immutable": "^4.0.0-rc.12",
+    "lodash": "^4.17.15",
+    "rxjs": "^6.5.4"
+  }
+}
