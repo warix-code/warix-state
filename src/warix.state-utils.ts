@@ -38,3 +38,15 @@ export const resolvePath = (path: string[]) => {
     });
     return current;
 };
+
+/**
+ * Generates a new unique id in the format ####-####-####-####-########
+ */
+export const newGUID = () => {
+    const fnRandom = (min: number, max: number) => Math.floor(Math.random() * (max - min)) + min;
+    const segments: string[] = [ new Date().getTime().toString(16) ];
+    while (segments.length < 4) {
+        segments.unshift(fnRandom(0x1111, 0xFFFF).toString(16));
+    }
+    return segments.join('-');
+};
