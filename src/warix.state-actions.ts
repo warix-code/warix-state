@@ -1,6 +1,7 @@
 import { fromJS, List, Map } from 'immutable';
 import { isArray, isObject } from 'lodash';
-import { IWarixStateAction, WarixStateActionType } from './include';
+import { IWarixStateAction } from './interfaces';
+import { WarixStateActionType } from './warix.state-action-type';
 
 const coerceValueType = (value: any) => {
     if (!Map.isMap(value) && !List.isList(value) && (isObject(value) || isArray(value))) {

@@ -3,7 +3,8 @@ import { isNil } from 'lodash';
 import { List } from 'immutable';
 
 /**
- * Selects an observable to the provided array path from the owning object WarixState. The resulting list is transforme to its Array representation
+ * Selects an observable to the provided array path from the owning object WarixState. The resulting list is transformed to its Array representation.
+ * This is a shallow operation, deep immutable elements will not be transformed, if a deep transformation is expected use the @see SelectFlatten decorator instead
  * @param path Path to be selected from WarixState or WarixStateProxy
  */
 export function SelectArray(path: string | string[]): any {
@@ -12,7 +13,7 @@ export function SelectArray(path: string | string[]): any {
         return {
             get() {
                 if (isNil(this[ownerKey])) {
-                    this[ownerKey] = window[GLOBAL_SYMBOL].selectMap(path, (v: List<any>) => v.toArray());
+                    this[ownerKey] = window[GLOBAL_SYMBOL].selectMap(path, (v: any) => List.isList(v) ? v.toArray() : v);
                 }
                 return this[ownerKey];
             }

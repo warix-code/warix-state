@@ -1,5 +1,5 @@
 import { isObject, isString } from 'lodash';
-import { IWarixStateReducerResult } from './include';
+import { IWarixStateReducerResult } from './interfaces';
 
 /**
  * Validates that a value matches IWarixStateReducerResult signature
