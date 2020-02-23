@@ -1,21 +1,37 @@
 import { fromJS, List, Map } from 'immutable';
 import { isArray, isNil, isObject } from 'lodash';
-import { BehaviorSubject, merge, Observable, Subject } from 'rxjs';
-import { distinctUntilChanged, filter, map, scan, startWith } from 'rxjs/operators';
+import { BehaviorSubject, defer, merge, Observable, Subject } from 'rxjs';
+import { debounceTime, distinctUntilChanged, filter, map, scan, startWith, take } from 'rxjs/operators';
 import { WarixStateProxy } from './include';
-import { IWarixReducerHandler, IWarixStateAction, IWarixStatePostAction, IWarixStateReducerEntry, WarixStateActionReducer, WarixStateDataReducer } from './interfaces';
+import { IKeyed, IWarixAsyncReducerHandler, IWarixReducerHandler, IWarixSelectSettings, IWarixStateAction, IWarixStatePostAction, IWarixStateReducerEntry, WarixStateActionReducer, WarixStateDataReducer, IWarixStateMinimal } from './interfaces';
 import { WarixStateActionType } from './warix.state-action-type';
 import { WarixStateActions } from './warix.state-actions';
 import { ensureArray, isReducerResult, resolvePath } from './warix.state-utils';
 
+interface IWarixAsyncProcessor {
+    forType: string;
+    paused: boolean;
+    handler(state: Map<string, any>, action: IWarixStateAction): Observable<any>;
+}
+
+function onSubscribe<T>(action: () => void): (source: Observable<T>) =>  Observable<T> {
+    return function inner(source: Observable<T>): Observable<T> {
+        return defer(() => {
+          action();
+          return source;
+        });
+    };
+}
+
 export const GLOBAL_SYMBOL = Symbol('WARIX::STATE');
 
-export class WarixState {
+export class WarixState implements IWarixStateMinimal {
     private readonly dispatcher$: Subject<IWarixStateAction>;
     private readonly postAction$: Subject<IWarixStatePostAction>;
     private readonly state$: BehaviorSubject<Map<string, any>>;
     private readonly preProcessors: IWarixStateReducerEntry<IWarixStateAction>[] = [];
     private readonly processors: IWarixStateReducerEntry<Map<string, any>>[] = [];
+    private readonly asyncProcessors: IWarixAsyncProcessor[] = [];
 
     /**
      * Observable to the underlying Map
@@ -38,22 +54,25 @@ export class WarixState {
         return this.postAction$.asObservable();
     }
 
-    constructor(initialState?: Map<string, any>) {
+    constructor(initialState?: IKeyed | Map<string, any>) {
         this.validateSingleInstance();
         this.dispatcher$ = new Subject<IWarixStateAction>();
         this.state$ = new BehaviorSubject<Map<string, any>>(undefined);
         this.postAction$ = new Subject<IWarixStatePostAction>();
-        this.initScanner(initialState || fromJS({}));
+        this.initScanner(
+            initialState ? (Map.isMap(initialState) ? initialState : fromJS(initialState)) :
+            fromJS({})
+        );
         window[GLOBAL_SYMBOL] = this;
     }
 
     private validateSingleInstance() {
-        if (window[GLOBAL_SYMBOL]) {
+        if (!isNil(window) && window[GLOBAL_SYMBOL]) {
             throw new Error(`An Warix state has already been defined, only a single instance can be defined per execution`);
         }
     }
 
-    private coerceValueType(value: any) {
+    private coerceValueTypeToImmutable(value: any) {
         if (!Map.isMap(value) && !List.isList(value) && (isObject(value) || isArray(value))) {
             return fromJS(value);
         }
@@ -108,6 +127,24 @@ export class WarixState {
         return result;
     }
 
+    private findAsyncProcessor(type: string) {
+        return this.asyncProcessors.find(x => x.forType === type);
+    }
+
+    private handleAsyncProcessing(processor: IWarixAsyncProcessor, currentState: Map<string, any>, action: IWarixStateAction) {
+        if (processor.paused) {
+            return;
+        }
+        processor.handler(currentState, action).pipe(
+            take(1),
+            onSubscribe(() => this.dispatch(`${action.type}::START`, action.payload))
+        ).subscribe(
+            next => this.dispatch(`${ action.type }::NEXT`, next),
+            error => this.dispatch(`${ action.type }::ERROR`, error),
+            () => this.dispatch(`${ action.type }::COMPLETE`, null)
+        );
+    }
+
     private initScanner(intialState: Map<string, any>) {
         const fnDispatchPost = (post: IWarixStatePostAction) => {
             setTimeout(() => {
@@ -117,6 +154,12 @@ export class WarixState {
         merge(new Subject().pipe(startWith(intialState)), this.dispatcher$)
             .pipe(
                 scan((accumulator: Map<string, any>, action: IWarixStateAction) => {
+                    const asyncProcessor = this.findAsyncProcessor(action.type);
+                    if (!isNil(asyncProcessor)) {
+                        this.handleAsyncProcessing(asyncProcessor, accumulator, action);
+                        fnDispatchPost({ executedAction: null, finalState: accumulator, initialAction: action, initialState: accumulator });
+                        return accumulator;
+                    }
                     const nextAction = this.reduceAction(accumulator, action);
                     const nextState = this.reduceData(accumulator, nextAction);
                     fnDispatchPost({ executedAction: nextAction, finalState: nextState, initialAction: action, initialState: accumulator });
@@ -232,7 +275,7 @@ export class WarixState {
                 this.preProcessors.splice(index, 1);
             }
         };
-        this.preProcessors.push(entry);
+        this.preProcessors.unshift(entry);
         return handler;
     }
 
@@ -273,17 +316,80 @@ export class WarixState {
                 this.processors.splice(index, 1);
             }
         };
-        this.processors.push(entry);
+        this.processors.unshift(entry);
         return handler;
     }
 
     /**
      * Registers a global processor that modifys the underlying state for all actions
      * @param forType Type of action
-     * @param reducer Function that modifies the underlysing state based on the action provided
+     * @param reducer Function that modifies the underlying state based on the action provided
      */
     public registerGlobalProcessor(reducer: WarixStateDataReducer): IWarixReducerHandler {
         return this.registerProcessor('*', reducer);
+    }
+
+    /**
+     * Registers an async processor that provides an observable as a source for an asynchronus action.
+     * The type name is used in conjuction of the modifiers ::START, ::NEXT, ::ERROR, ::COMPLETE whenever the observable
+     * reaches any of its states as a dispatch action.
+     * @param forType Type of action
+     * @param handler Function that provides an observable that will be used for the async flow of the operation
+     */
+    public registerAsync<T = any>(forType: string, handler: (state: Map<string, any>, action: IWarixStateAction) => Observable<T>): IWarixAsyncReducerHandler<T> {
+        const current = this.findAsyncProcessor(forType);
+        const internalHandlers: IWarixReducerHandler[] = [];
+        if (!isNil) {
+            throw Error(`A registration for an async processor witht the name ${ forType } has already been defined`);
+        }
+        const entry = { forType, handler, paused: false };
+
+        const asyncHandler = Object.defineProperties(Object.create(null), {
+            isPaused: {
+                get: () => entry.paused,
+                enumerable: true,
+                configurable: false
+            }
+        });
+
+        asyncHandler.pause = () => {
+            entry.paused = true;
+            return handler;
+        };
+        asyncHandler.resume = () => {
+            entry.paused = false;
+            return handler;
+        };
+        asyncHandler.remove = () => {
+            const index = this.asyncProcessors.indexOf(entry);
+            if (index > -1) {
+                this.asyncProcessors.splice(index, 1);
+                internalHandlers.forEach(h => h.remove());
+            }
+        };
+        asyncHandler.onNext = (callback: (value: any) => IWarixStateAction) => {
+            this.registerPreProcessor(`${ forType }::NEXT`, (s, a) => callback(a.payload));
+            return asyncHandler;
+        };
+        asyncHandler.onError = (callback: (value: any) => IWarixStateAction) => {
+            this.registerPreProcessor(`${ forType }::ERROR`, (s, a) => callback(a.payload));
+            return asyncHandler;
+        };
+        asyncHandler.onComplete = (callback: () => IWarixStateAction) => {
+            this.registerPreProcessor(`${ forType }::COMPLETE`, (s, a) => callback());
+            return asyncHandler;
+        };
+        asyncHandler.onStart = (callback: () => IWarixStateAction) => {
+            this.registerPreProcessor(`${ forType }::START`, (s, a) => callback());
+            return asyncHandler;
+        };
+        asyncHandler.trigger = (caller: Observable<any>) => {
+            return caller.subscribe(x => {
+                this.dispatch(forType, x);
+            });
+        };
+        this.asyncProcessors.push(entry);
+        return asyncHandler;
     }
 
     /**
@@ -325,20 +431,52 @@ export class WarixState {
      * Obtains an observable to the underlying value of a key in the state that will dispatch whenever the value changes
      * @param key Absolute path to the key in the state
      */
-    public select<T = any>(path: string | string[]) {
-        return this.source$.pipe(
-            map(x => x.getIn(resolvePath(ensureArray(path)))),
-            distinctUntilChanged()
-        ) as Observable<T>;
+    public select<T = any, M = T>(path: string | string[], settings?: Partial<IWarixSelectSettings<T, M>>) {
+        let currentSelect = this.source$.pipe(map(x => x.getIn(resolvePath(ensureArray(path)))), distinctUntilChanged());
+        if (settings) {
+            if (!isNil(settings.debounceTime) && settings.debounceTime > 0) {
+                currentSelect = currentSelect.pipe(debounceTime(settings.debounceTime));
+            }
+            if (!isNil(settings.preFilter)) {
+                currentSelect = currentSelect.pipe(filter(settings.preFilter));
+            }
+            if (!isNil(settings.map)) {
+                currentSelect = currentSelect.pipe(map(mx => settings.map(mx, this)));
+            }
+            if (!isNil(settings.postFilter)) {
+                currentSelect = currentSelect.pipe(filter(settings.postFilter));
+            }
+        }
+        return currentSelect as Observable<M>;
     }
 
     /**
-     * Obtains an observable to the underlying value of a key in the state that will dispatch whenever the value changes
-     * @param key Absolute path to the key in the state
-     * @param mapping Transformation function
+     * Obtains an observable to the underlying value of a key in the state that will dispatch whenever the value changes.
+     * If the value is a Map or a List, the value is flattened with its toJS method.
+     * Flattening a immutable object can be an expensive operation, use with caution.
+     * @param path Absolute path to the key in the state
      */
-    public selectMap<T = any, M = any>(path: string | string[], mapping: (value: T) => M) {
-        return this.select(path).pipe(map(x => mapping(x)));
+    public selectFlatten<T = any, M = T>(path: string | string[], settings?: Partial<IWarixSelectSettings<T, M>>) {
+        let currentSelect = this.source$.pipe(
+            map(x => x.getIn(resolvePath(ensureArray(path)))),
+            map(x => Map.isMap(x) ? x.toJS() : List.isList(x) ? x.toJS() : x),
+            distinctUntilChanged()
+        );
+        if (settings) {
+            if (!isNil(settings.debounceTime) && settings.debounceTime > 0) {
+                currentSelect = currentSelect.pipe(debounceTime(settings.debounceTime));
+            }
+            if (!isNil(settings.preFilter)) {
+                currentSelect = currentSelect.pipe(filter(settings.preFilter));
+            }
+            if (!isNil(settings.map)) {
+                currentSelect = currentSelect.pipe(map(mx => settings.map(mx, this)));
+            }
+            if (!isNil(settings.postFilter)) {
+                currentSelect = currentSelect.pipe(filter(settings.postFilter));
+            }
+        }
+        return currentSelect as Observable<M>;
     }
 
     /**
@@ -375,6 +513,7 @@ export class WarixState {
      */
     public patch(path: string | string[], value: any) {
         this.dispatcher$.next(WarixStateActions.patch(path, value));
+        return this;
     }
 
     /**

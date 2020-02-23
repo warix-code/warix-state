@@ -1,6 +1,6 @@
 {
   "name": "warix-state",
-  "version": "1.0.11",
+  "version": "1.0.20",
   "description": "Warix immutable state",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -25,6 +25,6 @@
     "@types/lodash": "^4.14.149",
     "immutable": "^4.0.0-rc.12",
     "lodash": "^4.17.15",
-    "rxjs": "^6.5.4"
+    "rxjs": "~6.4.0"
   }
 }

@@ -42,7 +42,7 @@ export const resolvePath = (path: string[]) => {
 /**
  * Generates a new unique id in the format ####-####-####-####-########
  */
-export const newGUID = () => {
+export const newUniqueId = () => {
     const fnRandom = (min: number, max: number) => Math.floor(Math.random() * (max - min)) + min;
     const segments: string[] = [ new Date().getTime().toString(16) ];
     while (segments.length < 4) {

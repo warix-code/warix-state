@@ -1,8 +1,8 @@
-import { Subject } from 'rxjs';
+import { Subject, Observable } from 'rxjs';
 import { filter, map, takeUntil } from 'rxjs/operators';
-import { List } from 'immutable';
+import { Map, List } from 'immutable';
 import { combinePaths, ensureArray } from './warix.state-utils';
-import { IWarixReducerHandler, IWarixStateAction, WarixStateActionReducer, WarixStateDataReducer } from './interfaces';
+import { IWarixReducerHandler, IWarixSelectSettings, IWarixStateAction, WarixStateActionReducer, WarixStateDataReducer, IWarixAsyncReducerHandler } from './interfaces';
 import { WarixState } from './include';
 
 export class WarixStateProxy {
@@ -117,6 +117,20 @@ export class WarixStateProxy {
     }
 
     /**
+     * Registers an async processor that provides an observable as a source for an asynchronus action.
+     * The type name is used in conjuction of the modifiers ::START, ::NEXT, ::ERROR, ::COMPLETE whenever the observable
+     * reaches any of its states as a dispatch action.
+     * This handler will be removed once the proxy is completed
+     * @param forType Type of action
+     * @param handler Function that provides an observable that will be used for the async flow of the operation
+     */
+    public registerAsync<T = any>(forType: string, handler: (state: Map<string, any>, action: IWarixStateAction) => Observable<T>): IWarixAsyncReducerHandler<T> {
+        const asyncHandler = this.owner.registerAsync(forType, handler);
+        this.instanceHandlers.push(asyncHandler);
+        return asyncHandler;
+    }
+
+    /**
      * Obtains the underlying value of the state at the rootPath of the proxy
      */
     public peek() {
@@ -127,25 +141,26 @@ export class WarixStateProxy {
      * Obtains the underlying value of a key in the state
      * @param path Relative path to the key in the state with respect of the proxy rootPath
      */
-    public peekKey(path: string | string[]) {
-        return this.owner.peekKey(combinePaths(this.basePath, path));
+    public peekKey<T = any>(path: string | string[]) {
+        return this.owner.peekKey(combinePaths(this.basePath, path)) as T;
     }
 
     /**
      * Obtains an observable to the underlying value of a key in the state that will dispatch whenever the value changes
      * @param path Relative path to the key in the state with respect of the proxy rootPath
      */
-    public select<T = any>(path: string | string[]) {
-        return this.owner.select<T>(combinePaths(this.basePath, path)).pipe(takeUntil(this.terminator$));
+    public select<T = any, M = T>(path: string | string[], settings?: Partial<IWarixSelectSettings<T, M>>) {
+        return this.owner.select<T, M>(combinePaths(this.basePath, path), settings).pipe(takeUntil(this.terminator$));
     }
 
     /**
-     * Obtains an observable to the underlying value of a key in the state that will dispatch whenever the value changes
+     * Obtains an observable to the underlying value of a key in the state that will dispatch whenever the value changes.
+     * If the value is a Map or a List, the value is flattened with its toJS method.
+     * Flattening a immutable object can be an expensive operation, use with caution.
      * @param path Relative path to the key in the state with respect of the proxy rootPath
-     * @param mapping Transformation function
      */
-    public selectMap<T = any, M = any>(path: string | string[], mapping: (value: T) => M) {
-        return this.select(path).pipe(map(x => mapping(x))).pipe(takeUntil(this.terminator$));
+    public selectFlatten<T = any, M = T>(path: string | string[], settings?: Partial<IWarixSelectSettings<T, M>>) {
+        return this.owner.selectFlatten<T, M>(combinePaths(this.basePath, path), settings).pipe(takeUntil(this.terminator$));
     }
 
     /**
